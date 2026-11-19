@@ -232,7 +232,9 @@ export const PuzzleBoard = ({
           return (
             <div
               key={`col-q-${c}`}
-              className="h-11 rounded-md border flex flex-col items-center justify-center tabular-nums text-xs font-bold leading-tight"
+              className={`h-11 rounded-md border flex flex-col items-center justify-center tabular-nums text-xs font-bold leading-tight lq-transition ${
+                status === 'exact' ? 'lq-quota-exact' : ''
+              }`}
               style={{
                 backgroundColor: bg,
                 color: fg,
@@ -268,7 +270,9 @@ export const PuzzleBoard = ({
           return (
             <div key={`row-group-${r}`} className="contents">
               <div
-                className="min-h-[48px] sm:min-h-[56px] rounded-md border flex flex-col items-center justify-center tabular-nums text-xs font-bold leading-tight px-1"
+                className={`min-h-[48px] sm:min-h-[56px] rounded-md border flex flex-col items-center justify-center tabular-nums text-xs font-bold leading-tight px-1 lq-transition ${
+                  rowStatus === 'exact' ? 'lq-quota-exact' : ''
+                }`}
                 style={{
                   backgroundColor: rowBg,
                   color: rowFg,
@@ -373,29 +377,40 @@ export const PuzzleBoard = ({
                       if (!fixed && !solved) onToggleMark(coord);
                     }}
                     onKeyDown={(e) => handleKeyDown(e, coord)}
-                    className="touch-target lq-transition relative aspect-square w-full rounded-md border-2 flex items-center justify-center font-bold text-sm"
+                    className={`touch-target lq-transition relative aspect-square w-full rounded-md border-2 flex items-center justify-center font-bold text-sm active:scale-95 ${
+                      isActive && !fixed ? 'lq-tile-active' : ''
+                    } ${solved && isActive ? 'lq-solved-tile' : ''}`}
                     style={{
                       backgroundColor: bgColor,
                       color: textColor,
                       borderColor: isHinted ? 'var(--accent)' : borderColor,
                       ...(isHinted ? { boxShadow: '0 0 0 2px var(--accent)' } : {}),
+                      ...(solved && isActive ? { animationDelay: `${(r + c) * 45}ms` } : {}),
                     }}
                   >
                     {isActive && kind !== 'wall' && (
                       <svg
                         viewBox="0 0 40 40"
-                        className="absolute inset-0 w-full h-full pointer-events-none"
+                        className="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
                         aria-hidden="true"
                       >
+                        <circle
+                          cx="20"
+                          cy="20"
+                          r="4.5"
+                          fill="currentColor"
+                          fillOpacity="0.28"
+                        />
                         {conn.up && (
                           <line
                             x1="20"
-                            y1="0"
+                            y1="-7"
                             x2="20"
                             y2="20"
                             stroke="currentColor"
-                            strokeWidth="4"
-                            strokeOpacity="0.45"
+                            strokeWidth="6"
+                            strokeLinecap="round"
+                            className="lq-pipe-segment"
                           />
                         )}
                         {conn.down && (
@@ -403,32 +418,35 @@ export const PuzzleBoard = ({
                             x1="20"
                             y1="20"
                             x2="20"
-                            y2="40"
+                            y2="47"
                             stroke="currentColor"
-                            strokeWidth="4"
-                            strokeOpacity="0.45"
+                            strokeWidth="6"
+                            strokeLinecap="round"
+                            className="lq-pipe-segment"
                           />
                         )}
                         {conn.left && (
                           <line
-                            x1="0"
+                            x1="-7"
                             y1="20"
                             x2="20"
                             y2="20"
                             stroke="currentColor"
-                            strokeWidth="4"
-                            strokeOpacity="0.45"
+                            strokeWidth="6"
+                            strokeLinecap="round"
+                            className="lq-pipe-segment"
                           />
                         )}
                         {conn.right && (
                           <line
                             x1="20"
                             y1="20"
-                            x2="40"
+                            x2="47"
                             y2="20"
                             stroke="currentColor"
-                            strokeWidth="4"
-                            strokeOpacity="0.45"
+                            strokeWidth="6"
+                            strokeLinecap="round"
+                            className="lq-pipe-segment"
                           />
                         )}
                       </svg>

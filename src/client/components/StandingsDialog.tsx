@@ -48,7 +48,7 @@ export const StandingsDialog = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="lq-backdrop-in fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ backgroundColor: 'rgba(17, 19, 24, 0.72)' }}
       role="dialog"
       aria-modal="true"
@@ -56,7 +56,7 @@ export const StandingsDialog = ({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-lg border p-5 max-h-[85dvh] overflow-y-auto"
+        className="lq-dialog-in w-full max-w-md rounded-lg border p-5 max-h-[85dvh] overflow-y-auto"
         style={{
           backgroundColor: 'var(--surface)',
           color: 'var(--ink)',

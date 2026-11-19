@@ -110,14 +110,119 @@ summary:focus-visible,
   min-height: 44px;
 }
 
+@keyframes lq-tile-pop {
+  0% {
+    transform: scale(0.91);
+  }
+  55% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes lq-quota-pop {
+  0% {
+    transform: scale(0.94);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes lq-solved-wave {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.07);
+    box-shadow: 0 0 0 2px var(--signal);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes lq-dialog-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes lq-backdrop-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes lq-line-draw {
+  0% {
+    stroke-dashoffset: 28;
+    opacity: 0.4;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0.92;
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .lq-transition {
-    transition: background-color 120ms ease, border-color 120ms ease, transform 90ms ease;
+    transition:
+      background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+      color 140ms ease,
+      box-shadow 160ms ease,
+      transform 110ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .lq-tile-active {
+    animation: lq-tile-pop 190ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .lq-quota-exact {
+    animation: lq-quota-pop 210ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .lq-solved-tile {
+    animation: lq-solved-wave 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .lq-dialog-in {
+    animation: lq-dialog-in 170ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .lq-backdrop-in {
+    animation: lq-backdrop-in 150ms ease-out;
+  }
+
+  .lq-pipe-segment {
+    stroke-dasharray: 28;
+    animation: lq-line-draw 150ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .lq-transition {
+  .lq-transition,
+  .lq-tile-active,
+  .lq-quota-exact,
+  .lq-solved-tile,
+  .lq-dialog-in,
+  .lq-backdrop-in,
+  .lq-pipe-segment {
     transition: none;
+    animation: none;
   }
 }
