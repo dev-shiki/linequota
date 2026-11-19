@@ -1,7 +1,7 @@
 {
   "private": true,
-  "name": "linequota",
-  "version": "1.0.0",
+  "name": "linequotadaily",
+  "version": "0.0.0",
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {
@@ -20,6 +20,7 @@
     "node": ">=24.0.0"
   },
   "dependencies": {
+    "@devvit/analytics": "0.15.4",
     "@devvit/start": "0.15.4",
     "@devvit/web": "0.15.4",
     "@hono/node-server": "2.1.6",

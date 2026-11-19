@@ -1,13 +1,17 @@
 import './index.css';
-import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react';
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   coordKey,
   formatDuration,
   formatShareGrid,
+  generateRandomSeedCode,
   getTileKind,
   getUtcDateKey,
   isFixedTile,
+  isValidDateKey,
+  isValidSeedKey,
   validateBoard,
 } from '../shared/puzzle';
 import type { CommunityStats, GridCoord, PuzzlePublic, UserDailyRecord } from '../shared/types';
@@ -18,9 +22,27 @@ import {
   saveProgress,
   submitSolve,
 } from './api/gameClient';
+import {
+  trackAppReady,
+  trackJourneyEnd,
+  trackJourneyInteraction,
+  trackJourneyProgress,
+  trackJourneyStart,
+} from './api/telemetry';
+import {
+  getInitialMuted,
+  playQuotaExact,
+  playRelayChime,
+  playTileDraw,
+  playTileErase,
+  playVictoryChord,
+  saveMutedPreference,
+} from './audio/sound';
 import { PuzzleBoard } from './components/PuzzleBoard';
-import type { InteractionTool } from './components/PuzzleBoard';
+import type { CellStrokeAction, InteractionTool } from './components/PuzzleBoard';
 import { RulesDialog } from './components/RulesDialog';
+import { StandingsDialog } from './components/StandingsDialog';
+import type { StandingsTab } from './components/StandingsDialog';
 import { WinDialog } from './components/WinDialog';
 import { applyTheme, getInitialTheme } from './theme';
 import type { ThemeMode } from './theme';
@@ -82,9 +104,23 @@ export const App = () => {
   const [hintedCoord, setHintedCoord] = useState<GridCoord | null>(null);
 
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [standingsOpen, setStandingsOpen] = useState(false);
+  const [standingsTab, setStandingsTab] = useState<StandingsTab>('standings');
   const [winOpen, setWinOpen] = useState(false);
   const [shareText, setShareText] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [seedInput, setSeedInput] = useState('');
+  const [muted, setMuted] = useState<boolean>(() => getInitialMuted());
+
+  const activeRef = useRef<Set<string>>(new Set());
+  const markedRef = useRef<Set<string>>(new Set());
+  const movesRef = useRef(0);
+  const prevExactCountRef = useRef(0);
+  const prevRelaysHitRef = useRef(0);
+  const appReadyTrackedRef = useRef(false);
+  const journeyStartedRef = useRef(false);
+  const relayProgressTrackedRef = useRef(false);
+  const endProgressTrackedRef = useRef(false);
 
   useEffect(() => {
     applyTheme(theme);
@@ -98,6 +134,12 @@ export const App = () => {
         const nextActive = new Set<string>(data.savedActiveKeys);
         nextActive.add(coordKey(data.puzzle.start));
         nextActive.add(coordKey(data.puzzle.end));
+        const nextMarked = new Set<string>(data.savedMarkedKeys);
+        const initialMoves = data.userRecord.moves ?? 0;
+
+        activeRef.current = nextActive;
+        markedRef.current = nextMarked;
+        movesRef.current = initialMoves;
 
         setMode(data.mode);
         setUsername(data.username);
@@ -105,15 +147,20 @@ export const App = () => {
         setUserRecord(data.userRecord);
         setCommunity(data.community);
         setActiveSet(nextActive);
-        setMarkedSet(new Set(data.savedMarkedKeys));
+        setMarkedSet(nextMarked);
         setHistory([]);
         setElapsedSeconds(data.userRecord.elapsedSeconds ?? 0);
-        setMoves(data.userRecord.moves ?? 0);
+        setMoves(initialMoves);
         setHintsUsed(data.userRecord.hintsUsed);
         setLoadError(null);
         setActionError(null);
         setHintBanner(null);
         setHintedCoord(null);
+
+        if (!appReadyTrackedRef.current) {
+          appReadyTrackedRef.current = true;
+          void trackAppReady();
+        }
 
         if (data.userRecord.solved) {
           setShareText(
@@ -121,7 +168,7 @@ export const App = () => {
               data.puzzle,
               nextActive,
               data.userRecord.elapsedSeconds ?? 0,
-              data.userRecord.moves ?? 0,
+              initialMoves,
               data.userRecord.hintsUsed,
               data.userRecord.streak
             )
@@ -146,7 +193,31 @@ export const App = () => {
   const handleSelectBoard = (nextDateKey: string) => {
     setLoading(true);
     setLoadError(null);
+    setActionError(null);
+    journeyStartedRef.current = false;
+    relayProgressTrackedRef.current = false;
+    endProgressTrackedRef.current = false;
     setSelectedDateKey(nextDateKey);
+    void trackJourneyInteraction('board_switched', nextDateKey);
+  };
+
+  const handlePlaySeed = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const raw = seedInput.trim().toUpperCase();
+    if (!raw) return;
+    const candidate = /^[A-Z0-9]{4,8}$/.test(raw) ? `LQ-${raw}` : raw;
+    if (!isValidSeedKey(candidate) && !isValidDateKey(candidate)) {
+      setActionError('Enter a valid challenge seed (e.g. LQ-7K9P).');
+      return;
+    }
+    setSeedInput(candidate);
+    handleSelectBoard(candidate);
+  };
+
+  const handleNewSeed = () => {
+    const nextSeed = generateRandomSeedCode();
+    setSeedInput(nextSeed);
+    handleSelectBoard(nextSeed);
   };
 
   const handleRetryLoad = () => {
@@ -183,12 +254,34 @@ export const App = () => {
     [mode, puzzle]
   );
 
-  const pushHistory = () => {
+  const pushHistory = useCallback(() => {
+    const activeSnapshot = Array.from(activeRef.current);
+    const markedSnapshot = Array.from(markedRef.current);
     setHistory((prev) => [
       ...prev.slice(-24),
-      { active: Array.from(activeSet), marked: Array.from(markedSet) },
+      { active: activeSnapshot, marked: markedSnapshot },
     ]);
-  };
+  }, []);
+
+  const ensureJourneyStarted = useCallback(() => {
+    if (journeyStartedRef.current) return;
+    journeyStartedRef.current = true;
+    void trackJourneyStart();
+  }, []);
+
+  const checkProgressMilestones = useCallback(
+    (nextValidation: ReturnType<typeof validateBoard>) => {
+      if (!relayProgressTrackedRef.current && nextValidation.relaysHit >= 1) {
+        relayProgressTrackedRef.current = true;
+        void trackJourneyProgress(0.5, 'first_relay_connected');
+      }
+      if (!endProgressTrackedRef.current && nextValidation.reachedEnd) {
+        endProgressTrackedRef.current = true;
+        void trackJourneyProgress(0.85, 'end_terminal_linked');
+      }
+    },
+    []
+  );
 
   const finalizeSolve = useCallback(
     async (
@@ -215,13 +308,96 @@ export const App = () => {
         setCommunity(res.community);
         setShareText(res.shareText);
         setWinOpen(true);
+        playVictoryChord(muted);
+        void trackJourneyEnd('solved');
       } catch (err) {
         setActionError(err instanceof Error ? err.message : 'Could not verify solve.');
       } finally {
         setSubmitting(false);
       }
     },
-    [mode]
+    [mode, muted]
+  );
+
+  const handleStrokeStart = useCallback(() => {
+    if (!puzzle || userRecord.solved || submitting) return;
+    ensureJourneyStarted();
+    pushHistory();
+  }, [ensureJourneyStarted, pushHistory, puzzle, submitting, userRecord.solved]);
+
+  const handleSetCell = useCallback(
+    (coord: GridCoord, action: CellStrokeAction) => {
+      if (!puzzle || userRecord.solved || submitting) return;
+      const kind = getTileKind(puzzle, coord);
+      if (isFixedTile(kind)) return;
+
+      const k = coordKey(coord);
+      const nextActive = new Set(activeRef.current);
+      const nextMarked = new Set(markedRef.current);
+
+      if (action === 'draw-on') {
+        if (nextActive.has(k)) return;
+        nextActive.add(k);
+        nextMarked.delete(k);
+      } else if (action === 'draw-off') {
+        if (!nextActive.has(k)) return;
+        nextActive.delete(k);
+      } else if (action === 'mark-on') {
+        if (nextMarked.has(k)) return;
+        nextMarked.add(k);
+        nextActive.delete(k);
+      } else {
+        if (!nextMarked.has(k)) return;
+        nextMarked.delete(k);
+      }
+
+      activeRef.current = nextActive;
+      markedRef.current = nextMarked;
+      const nextMoves = movesRef.current + 1;
+      movesRef.current = nextMoves;
+
+      setActiveSet(nextActive);
+      setMarkedSet(nextMarked);
+      setMoves(nextMoves);
+      setHintedCoord(null);
+      setActionError(null);
+      persistSnapshot(nextActive, nextMarked);
+
+      const nextValidation = validateBoard(puzzle, nextActive);
+      const exactCount =
+        nextValidation.rowStatus.filter((s) => s === 'exact').length +
+        nextValidation.colStatus.filter((s) => s === 'exact').length;
+
+      if (action === 'draw-on') {
+        if (nextValidation.relaysHit > prevRelaysHitRef.current) {
+          playRelayChime(nextValidation.relaysHit, muted);
+        } else if (exactCount > prevExactCountRef.current) {
+          playQuotaExact(muted);
+        } else {
+          playTileDraw(nextActive.size, muted);
+        }
+      } else {
+        playTileErase(muted);
+      }
+      prevExactCountRef.current = exactCount;
+      prevRelaysHitRef.current = nextValidation.relaysHit;
+
+      checkProgressMilestones(nextValidation);
+      if (nextValidation.isValidPath) {
+        void finalizeSolve(puzzle, nextActive, nextMoves, elapsedSeconds, hintsUsed);
+      }
+    },
+    [
+      checkProgressMilestones,
+      elapsedSeconds,
+      finalizeSolve,
+      hintsUsed,
+      muted,
+      persistSnapshot,
+      puzzle,
+      submitting,
+      userRecord.solved,
+    ]
   );
 
   const handleToggleActive = (coord: GridCoord) => {
@@ -229,31 +405,11 @@ export const App = () => {
     const kind = getTileKind(puzzle, coord);
     if (isFixedTile(kind)) return;
 
-    const k = coordKey(coord);
+    ensureJourneyStarted();
     pushHistory();
-
-    const nextActive = new Set(activeSet);
-    const nextMarked = new Set(markedSet);
-
-    if (nextActive.has(k)) {
-      nextActive.delete(k);
-    } else {
-      nextActive.add(k);
-      nextMarked.delete(k);
-    }
-
-    const nextMoves = moves + 1;
-    setActiveSet(nextActive);
-    setMarkedSet(nextMarked);
-    setMoves(nextMoves);
-    setHintedCoord(null);
-    setActionError(null);
-    persistSnapshot(nextActive, nextMarked);
-
-    const nextValidation = validateBoard(puzzle, nextActive);
-    if (nextValidation.isValidPath) {
-      void finalizeSolve(puzzle, nextActive, nextMoves, elapsedSeconds, hintsUsed);
-    }
+    const k = coordKey(coord);
+    const action: CellStrokeAction = activeRef.current.has(k) ? 'draw-off' : 'draw-on';
+    handleSetCell(coord, action);
   };
 
   const handleToggleMark = (coord: GridCoord) => {
@@ -261,23 +417,11 @@ export const App = () => {
     const kind = getTileKind(puzzle, coord);
     if (isFixedTile(kind)) return;
 
-    const k = coordKey(coord);
+    ensureJourneyStarted();
     pushHistory();
-
-    const nextActive = new Set(activeSet);
-    const nextMarked = new Set(markedSet);
-    if (nextMarked.has(k)) {
-      nextMarked.delete(k);
-    } else {
-      nextMarked.add(k);
-      nextActive.delete(k);
-    }
-
-    setActiveSet(nextActive);
-    setMarkedSet(nextMarked);
-    setMoves((m) => m + 1);
-    setHintedCoord(null);
-    persistSnapshot(nextActive, nextMarked);
+    const k = coordKey(coord);
+    const action: CellStrokeAction = markedRef.current.has(k) ? 'mark-off' : 'mark-on';
+    handleSetCell(coord, action);
   };
 
   const handleUndo = () => {
@@ -286,6 +430,8 @@ export const App = () => {
     if (!last) return;
     const nextActive = new Set(last.active);
     const nextMarked = new Set(last.marked);
+    activeRef.current = nextActive;
+    markedRef.current = nextMarked;
     setHistory((prev) => prev.slice(0, -1));
     setActiveSet(nextActive);
     setMarkedSet(nextMarked);
@@ -301,6 +447,8 @@ export const App = () => {
       coordKey(puzzle.end),
     ]);
     const nextMarked = new Set<string>();
+    activeRef.current = nextActive;
+    markedRef.current = nextMarked;
     setActiveSet(nextActive);
     setMarkedSet(nextMarked);
     setHintBanner(null);
@@ -319,6 +467,7 @@ export const App = () => {
       setHintsUsed(hint.hintsUsed);
       setHintBanner(hint.message);
       setHintedCoord(hint.coord);
+      void trackJourneyInteraction('hint_requested', `hints:${hint.hintsUsed}`);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Hint request failed.');
     }
@@ -337,25 +486,33 @@ export const App = () => {
     void finalizeSolve(puzzle, activeSet, moves, elapsedSeconds, hintsUsed);
   };
 
+  const handleToggleMute = () => {
+    setMuted((prev) => {
+      const next = !prev;
+      saveMutedPreference(next);
+      return next;
+    });
+  };
+
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-dvh flex flex-col">
       <header
-        className="border-b px-4 py-3"
+        className="border-b px-3 sm:px-4 py-2.5"
         style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border)' }}
       >
-        <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-baseline gap-3">
-            <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight">
+        <div className="max-w-3xl mx-auto flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-baseline gap-2">
+            <h1 className="text-lg sm:text-xl font-extrabold tracking-tight">
               LineQuota
             </h1>
             {puzzle && (
               <span className="text-xs font-semibold tabular-nums" style={{ color: 'var(--ink-muted)' }}>
-                #{puzzle.puzzleNumber} ({puzzle.dateKey})
+                #{puzzle.puzzleNumber}
               </span>
             )}
           </div>
 
-          <nav aria-label="Game utility controls" className="flex flex-wrap items-center gap-2">
+          <nav aria-label="Game utility controls" className="flex flex-wrap items-center gap-1.5">
             <label htmlFor="board-select" className="sr-only">
               Select puzzle board
             </label>
@@ -363,7 +520,7 @@ export const App = () => {
               id="board-select"
               value={selectedDateKey}
               onChange={(e) => handleSelectBoard(e.target.value)}
-              className="touch-target px-3 py-2 rounded-md border text-xs sm:text-sm font-semibold"
+              className="touch-target px-2.5 py-1.5 rounded-md border text-xs font-semibold"
               style={{
                 backgroundColor: 'var(--surface-alt)',
                 color: 'var(--ink)',
@@ -374,16 +531,56 @@ export const App = () => {
                 const dk = dateKeyWithOffset(todayKey, item.offsetDays);
                 return (
                   <option key={dk} value={dk}>
-                    {item.label} ({dk})
+                    {item.label}
                   </option>
                 );
               })}
+              {!PRACTICE_DATES.some(
+                (item) => dateKeyWithOffset(todayKey, item.offsetDays) === selectedDateKey
+              ) && (
+                <option value={selectedDateKey}>Seed: {selectedDateKey}</option>
+              )}
             </select>
 
             <button
               type="button"
-              onClick={() => setRulesOpen(true)}
-              className="touch-target px-3 py-2 rounded-md border text-xs sm:text-sm font-semibold"
+              onClick={() => {
+                setStandingsTab('standings');
+                setStandingsOpen(true);
+              }}
+              className="touch-target px-2.5 py-1.5 rounded-md border text-xs font-semibold"
+              style={{
+                backgroundColor: 'var(--surface-alt)',
+                color: 'var(--ink)',
+                borderColor: 'var(--border)',
+              }}
+            >
+              Standings ({community.totalSolves})
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setStandingsTab('seeds');
+                setStandingsOpen(true);
+              }}
+              className="touch-target px-2.5 py-1.5 rounded-md border text-xs font-semibold"
+              style={{
+                backgroundColor: 'var(--surface-alt)',
+                color: 'var(--ink)',
+                borderColor: 'var(--border)',
+              }}
+            >
+              Seeds
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setRulesOpen(true);
+                void trackJourneyInteraction('rules_opened');
+              }}
+              className="touch-target px-2.5 py-1.5 rounded-md border text-xs font-semibold"
               style={{
                 backgroundColor: 'var(--surface-alt)',
                 color: 'var(--ink)',
@@ -395,8 +592,22 @@ export const App = () => {
 
             <button
               type="button"
+              aria-pressed={!muted}
+              onClick={handleToggleMute}
+              className="touch-target px-2.5 py-1.5 rounded-md border text-xs font-semibold"
+              style={{
+                backgroundColor: 'var(--surface-alt)',
+                color: 'var(--ink)',
+                borderColor: 'var(--border)',
+              }}
+            >
+              {muted ? 'Muted' : 'Sound'}
+            </button>
+
+            <button
+              type="button"
               onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
-              className="touch-target px-3 py-2 rounded-md border text-xs sm:text-sm font-semibold"
+              className="touch-target px-2.5 py-1.5 rounded-md border text-xs font-semibold"
               style={{
                 backgroundColor: 'var(--surface-alt)',
                 color: 'var(--ink)',
@@ -409,7 +620,7 @@ export const App = () => {
         </div>
       </header>
 
-      <main className="flex-1 w-full max-w-5xl mx-auto px-4 py-5 sm:py-7">
+      <main className="flex-1 w-full max-w-xl mx-auto px-3 sm:px-4 py-3 sm:py-4 flex flex-col justify-center">
         {loading && (
           <div
             className="rounded-lg border p-6 text-center"
@@ -443,287 +654,198 @@ export const App = () => {
         )}
 
         {!loading && !loadError && puzzle && validation && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            <section
-              className="lg:col-span-7 rounded-lg border p-3 sm:p-5"
-              style={{
-                backgroundColor: 'var(--surface)',
-                borderColor: 'var(--border)',
-                boxShadow: 'var(--shadow-elevated)',
-              }}
-              aria-labelledby="board-heading"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-                <h2 id="board-heading" className="text-base font-bold">
-                  Route Grid
+          <section
+            className="rounded-lg border p-3 sm:p-5"
+            style={{
+              backgroundColor: 'var(--surface)',
+              borderColor: 'var(--border)',
+              boxShadow: 'var(--shadow-elevated)',
+            }}
+            aria-labelledby="board-heading"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <div className="flex items-center gap-2">
+                <h2 id="board-heading" className="text-sm sm:text-base font-bold">
+                  {puzzle.dateKey}
                 </h2>
-                <div className="flex items-center gap-4 text-xs sm:text-sm font-semibold tabular-nums">
-                  <span>Time: {formatDuration(elapsedSeconds)}</span>
-                  <span>Moves: {moves}</span>
-                  <span>Streak: {userRecord.streak}d</span>
-                </div>
-              </div>
-
-              <PuzzleBoard
-                puzzle={puzzle}
-                activeSet={activeSet}
-                markedSet={markedSet}
-                validation={validation}
-                tool={tool}
-                hintedCoord={hintedCoord}
-                solved={userRecord.solved}
-                onToggleActive={handleToggleActive}
-                onToggleMark={handleToggleMark}
-              />
-
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2" role="group" aria-label="Tile action mode">
-                  <button
-                    type="button"
-                    aria-pressed={tool === 'draw'}
-                    onClick={() => setTool('draw')}
-                    className="touch-target px-3.5 py-2 rounded-md border text-xs sm:text-sm font-semibold"
-                    style={{
-                      backgroundColor: tool === 'draw' ? 'var(--signal)' : 'var(--surface-alt)',
-                      color: tool === 'draw' ? 'var(--signal-ink)' : 'var(--ink)',
-                      borderColor: tool === 'draw' ? 'var(--signal)' : 'var(--border)',
-                    }}
-                  >
-                    Draw Route
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={tool === 'mark'}
-                    onClick={() => setTool('mark')}
-                    className="touch-target px-3.5 py-2 rounded-md border text-xs sm:text-sm font-semibold"
-                    style={{
-                      backgroundColor: tool === 'mark' ? 'var(--relay)' : 'var(--surface-alt)',
-                      color: tool === 'mark' ? 'var(--relay-ink)' : 'var(--ink)',
-                      borderColor: tool === 'mark' ? 'var(--relay)' : 'var(--border)',
-                    }}
-                  >
-                    Mark (X)
-                  </button>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={history.length === 0 || userRecord.solved}
-                    onClick={handleUndo}
-                    className="touch-target px-3.5 py-2 rounded-md border text-xs sm:text-sm font-semibold disabled:opacity-50"
-                    style={{
-                      backgroundColor: 'var(--surface-alt)',
-                      color: 'var(--ink)',
-                      borderColor: 'var(--border)',
-                    }}
-                  >
-                    Undo
-                  </button>
-                  <button
-                    type="button"
-                    disabled={userRecord.solved}
-                    onClick={handleClear}
-                    className="touch-target px-3.5 py-2 rounded-md border text-xs sm:text-sm font-semibold disabled:opacity-50"
-                    style={{
-                      backgroundColor: 'var(--surface-alt)',
-                      color: 'var(--ink)',
-                      borderColor: 'var(--border)',
-                    }}
-                  >
-                    Clear
-                  </button>
-                  <button
-                    type="button"
-                    disabled={userRecord.solved}
-                    onClick={() => void handleHint()}
-                    className="touch-target px-3.5 py-2 rounded-md border text-xs sm:text-sm font-semibold disabled:opacity-50"
-                    style={{
-                      backgroundColor: 'var(--surface-alt)',
-                      color: 'var(--ink)',
-                      borderColor: 'var(--border)',
-                    }}
-                  >
-                    Hint ({hintsUsed})
-                  </button>
-                </div>
-              </div>
-
-              {hintBanner && (
-                <div
-                  className="mt-3 rounded-md border px-3 py-2 text-xs font-semibold"
+                <span
+                  className="text-[11px] font-bold px-2 py-0.5 rounded-sm"
                   style={{
-                    backgroundColor: 'var(--signal-tint)',
-                    color: 'var(--ink)',
-                    borderColor: 'var(--signal)',
+                    backgroundColor: validation.isValidPath
+                      ? 'var(--signal)'
+                      : 'var(--surface-alt)',
+                    color: validation.isValidPath ? 'var(--signal-ink)' : 'var(--ink)',
                   }}
-                  role="status"
                 >
-                  Hint: {hintBanner}
-                </div>
-              )}
+                  Relays {validation.relaysHit}/{validation.relaysTotal}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 text-xs sm:text-sm font-semibold tabular-nums">
+                <span>{formatDuration(elapsedSeconds)}</span>
+                <span>{moves}m</span>
+                <span>{userRecord.streak}d</span>
+              </div>
+            </div>
 
-              {actionError && (
-                <div
-                  className="mt-3 rounded-md border px-3 py-2 text-xs font-semibold"
-                  style={{
-                    backgroundColor: 'var(--error-bg)',
-                    color: 'var(--error)',
-                    borderColor: 'var(--error)',
-                  }}
-                  role="alert"
-                >
-                  {actionError}
-                </div>
-              )}
-            </section>
+            <p
+              className="text-xs sm:text-sm mb-3 min-h-[20px]"
+              style={{ color: validation.isValidPath ? 'var(--signal)' : 'var(--ink-muted)' }}
+              role="status"
+            >
+              {moves === 0 && !userRecord.solved
+                ? 'Drag from S through every R relay to E, matching each row and column count.'
+                : validation.reason}
+            </p>
 
-            <aside className="lg:col-span-5 flex flex-col gap-5">
-              <section
-                className="rounded-lg border p-4 sm:p-5"
-                style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border)' }}
-                aria-labelledby="status-heading"
-              >
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <h2 id="status-heading" className="text-base font-bold">
-                    Circuit Diagnostics
-                  </h2>
-                  <span
-                    className="text-xs font-bold px-2 py-1 rounded-sm"
-                    style={{
-                      backgroundColor: validation.isValidPath
-                        ? 'var(--signal)'
-                        : 'var(--surface-alt)',
-                      color: validation.isValidPath ? 'var(--signal-ink)' : 'var(--ink)',
-                    }}
-                  >
-                    {userRecord.solved
-                      ? 'SOLVED'
-                      : validation.isValidPath
-                        ? 'VALID'
-                        : 'IN PROGRESS'}
-                  </span>
-                </div>
+            <PuzzleBoard
+              puzzle={puzzle}
+              activeSet={activeSet}
+              markedSet={markedSet}
+              validation={validation}
+              tool={tool}
+              hintedCoord={hintedCoord}
+              solved={userRecord.solved}
+              onToggleActive={handleToggleActive}
+              onToggleMark={handleToggleMark}
+              onStrokeStart={handleStrokeStart}
+              onSetCell={handleSetCell}
+            />
 
-                <p className="text-sm mb-4" style={{ color: 'var(--ink-muted)' }}>
-                  {validation.reason}
-                </p>
-
-                <dl className="grid grid-cols-2 gap-3 text-xs sm:text-sm mb-4 tabular-nums">
-                  <div
-                    className="rounded-md border p-2.5"
-                    style={{ backgroundColor: 'var(--surface-alt)', borderColor: 'var(--border)' }}
-                  >
-                    <dt style={{ color: 'var(--ink-muted)' }}>Relays Connected</dt>
-                    <dd className="text-base font-bold">
-                      {validation.relaysHit} / {validation.relaysTotal}
-                    </dd>
-                  </div>
-                  <div
-                    className="rounded-md border p-2.5"
-                    style={{ backgroundColor: 'var(--surface-alt)', borderColor: 'var(--border)' }}
-                  >
-                    <dt style={{ color: 'var(--ink-muted)' }}>End Terminal</dt>
-                    <dd className="text-base font-bold">
-                      {validation.reachedEnd ? 'Linked' : 'Unlinked'}
-                    </dd>
-                  </div>
-                </dl>
-
+            <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5" role="group" aria-label="Tile action mode">
                 <button
                   type="button"
-                  disabled={submitting}
-                  onClick={handleVerifyButton}
-                  className="touch-target w-full px-4 py-3 rounded-md text-sm font-bold"
+                  aria-pressed={tool === 'draw'}
+                  onClick={() => setTool('draw')}
+                  className="touch-target px-3 py-1.5 rounded-md border text-xs sm:text-sm font-semibold"
                   style={{
-                    backgroundColor: 'var(--accent)',
-                    color: 'var(--accent-ink)',
+                    backgroundColor: tool === 'draw' ? 'var(--signal)' : 'var(--surface-alt)',
+                    color: tool === 'draw' ? 'var(--signal-ink)' : 'var(--ink)',
+                    borderColor: tool === 'draw' ? 'var(--signal)' : 'var(--border)',
                   }}
                 >
-                  {userRecord.solved
-                    ? 'Open Result & Share Card'
-                    : submitting
-                      ? 'Verifying Route...'
-                      : 'Check & Submit Route'}
+                  Draw
                 </button>
-              </section>
+                <button
+                  type="button"
+                  aria-pressed={tool === 'mark'}
+                  onClick={() => setTool('mark')}
+                  className="touch-target px-3 py-1.5 rounded-md border text-xs sm:text-sm font-semibold"
+                  style={{
+                    backgroundColor: tool === 'mark' ? 'var(--relay)' : 'var(--surface-alt)',
+                    color: tool === 'mark' ? 'var(--relay-ink)' : 'var(--ink)',
+                    borderColor: tool === 'mark' ? 'var(--relay)' : 'var(--border)',
+                  }}
+                >
+                  Mark (X)
+                </button>
+              </div>
 
-              <section
-                className="rounded-lg border p-4 sm:p-5"
-                style={{ backgroundColor: 'var(--surface)', borderColor: 'var(--border)' }}
-                aria-labelledby="standings-heading"
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={history.length === 0 || userRecord.solved}
+                  onClick={handleUndo}
+                  className="touch-target px-3 py-1.5 rounded-md border text-xs sm:text-sm font-semibold disabled:opacity-50"
+                  style={{
+                    backgroundColor: 'var(--surface-alt)',
+                    color: 'var(--ink)',
+                    borderColor: 'var(--border)',
+                  }}
+                >
+                  Undo
+                </button>
+                <button
+                  type="button"
+                  disabled={userRecord.solved}
+                  onClick={handleClear}
+                  className="touch-target px-3 py-1.5 rounded-md border text-xs sm:text-sm font-semibold disabled:opacity-50"
+                  style={{
+                    backgroundColor: 'var(--surface-alt)',
+                    color: 'var(--ink)',
+                    borderColor: 'var(--border)',
+                  }}
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  disabled={userRecord.solved}
+                  onClick={() => void handleHint()}
+                  className="touch-target px-3 py-1.5 rounded-md border text-xs sm:text-sm font-semibold disabled:opacity-50"
+                  style={{
+                    backgroundColor: 'var(--surface-alt)',
+                    color: 'var(--ink)',
+                    borderColor: 'var(--border)',
+                  }}
+                >
+                  Hint ({hintsUsed})
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={handleVerifyButton}
+              className="touch-target w-full mt-3 px-4 py-2.5 rounded-md text-sm font-bold"
+              style={{
+                backgroundColor: 'var(--accent)',
+                color: 'var(--accent-ink)',
+              }}
+            >
+              {userRecord.solved
+                ? 'Open Result & Share Card'
+                : submitting
+                  ? 'Verifying Route...'
+                  : 'Check & Submit Route'}
+            </button>
+
+            {hintBanner && (
+              <div
+                className="mt-2.5 rounded-md border px-3 py-2 text-xs font-semibold"
+                style={{
+                  backgroundColor: 'var(--signal-tint)',
+                  color: 'var(--ink)',
+                  borderColor: 'var(--signal)',
+                }}
+                role="status"
               >
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <h2 id="standings-heading" className="text-base font-bold">
-                    Subreddit Standings
-                  </h2>
-                  <span className="text-xs font-semibold" style={{ color: 'var(--ink-muted)' }}>
-                    {mode === 'reddit' ? `u/${username}` : 'Local Preview'}
-                  </span>
-                </div>
+                Hint: {hintBanner}
+              </div>
+            )}
 
-                {community.leaderboard.length === 0 ? (
-                  <div
-                    className="rounded-md border p-4 text-xs sm:text-sm"
-                    style={{
-                      backgroundColor: 'var(--surface-alt)',
-                      borderColor: 'var(--border)',
-                      color: 'var(--ink-muted)',
-                    }}
-                  >
-                    No recorded solves for this board yet. Complete the route above to set the first
-                    time.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs sm:text-sm tabular-nums border-collapse">
-                      <thead>
-                        <tr
-                          className="border-b"
-                          style={{ borderColor: 'var(--border)', color: 'var(--ink-muted)' }}
-                        >
-                          <th className="py-2 pr-2 font-semibold">Rank</th>
-                          <th className="py-2 pr-2 font-semibold">Player</th>
-                          <th className="py-2 pr-2 font-semibold">Time</th>
-                          <th className="py-2 font-semibold">Clean</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {community.leaderboard.map((row) => (
-                          <tr
-                            key={`${row.rank}-${row.username}`}
-                            className="border-b"
-                            style={{ borderColor: 'var(--border-subtle)' }}
-                          >
-                            <td className="py-2 pr-2 font-bold">#{row.rank}</td>
-                            <td className="py-2 pr-2 font-medium">u/{row.username}</td>
-                            <td className="py-2 pr-2">{formatDuration(row.elapsedSeconds)}</td>
-                            <td className="py-2">
-                              {row.hintsUsed === 0 ? 'Clean' : `${row.hintsUsed}h`}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </section>
-            </aside>
-          </div>
+            {actionError && (
+              <div
+                className="mt-2.5 rounded-md border px-3 py-2 text-xs font-semibold"
+                style={{
+                  backgroundColor: 'var(--error-bg)',
+                  color: 'var(--error)',
+                  borderColor: 'var(--error)',
+                }}
+                role="alert"
+              >
+                {actionError}
+              </div>
+            )}
+          </section>
         )}
       </main>
 
-      <footer
-        className="border-t px-4 py-3 text-xs"
-        style={{ borderColor: 'var(--border)', color: 'var(--ink-muted)' }}
-      >
-        <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-2">
-          <span>LineQuota Daily Puzzle for Reddit Interactive Posts</span>
-          <span>Unique solution guaranteed per UTC day</span>
-        </div>
-      </footer>
-
       <RulesDialog open={rulesOpen} onClose={() => setRulesOpen(false)} />
+      <StandingsDialog
+        open={standingsOpen}
+        tab={standingsTab}
+        onTabChange={setStandingsTab}
+        mode={mode}
+        username={username}
+        community={community}
+        seedInput={seedInput}
+        onSeedInputChange={setSeedInput}
+        onPlaySeed={handlePlaySeed}
+        onNewSeed={handleNewSeed}
+        onClose={() => setStandingsOpen(false)}
+      />
       {puzzle && (
         <WinDialog
           open={winOpen}
@@ -732,10 +854,16 @@ export const App = () => {
           record={userRecord}
           shareText={shareText}
           mode={mode}
+          community={community}
+          username={username}
           onClose={() => setWinOpen(false)}
-          onPostComment={() =>
-            postShareComment({ dateKey: puzzle.dateKey, shareText }, mode)
-          }
+          onPostComment={async () => {
+            const res = await postShareComment({ dateKey: puzzle.dateKey, shareText }, mode);
+            if (res.posted) {
+              void trackJourneyInteraction('comment_shared', puzzle.dateKey);
+            }
+            return res;
+          }}
         />
       )}
     </div>

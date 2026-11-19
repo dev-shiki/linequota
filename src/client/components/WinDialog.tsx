@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
-import { formatDuration } from '../../shared/puzzle';
-import type { UserDailyRecord } from '../../shared/types';
+import {
+  formatCountdown,
+  formatDuration,
+  getSecondsUntilNextUtcDay,
+} from '../../shared/puzzle';
+import type { CommunityStats, UserDailyRecord } from '../../shared/types';
 
 interface WinDialogProps {
   open: boolean;
@@ -9,6 +13,8 @@ interface WinDialogProps {
   record: UserDailyRecord;
   shareText: string;
   mode: 'reddit' | 'local';
+  community?: CommunityStats;
+  username?: string;
   onClose: () => void;
   onPostComment: () => Promise<{ posted: boolean; message: string }>;
 }
@@ -20,12 +26,25 @@ export const WinDialog = ({
   record,
   shareText,
   mode,
+  community,
+  username,
   onClose,
   onPostComment,
 }: WinDialogProps) => {
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [commentStatus, setCommentStatus] = useState<string | null>(null);
   const [posting, setPosting] = useState(false);
+  const [secondsUntilReset, setSecondsUntilReset] = useState<number>(() =>
+    getSecondsUntilNextUtcDay()
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setInterval(() => {
+      setSecondsUntilReset(getSecondsUntilNextUtcDay());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -40,6 +59,12 @@ export const WinDialog = ({
   }, [open, onClose]);
 
   if (!open) return null;
+
+  const playerEntry = username
+    ? community?.leaderboard.find((entry) => entry.username === username)
+    : undefined;
+  const totalSolves = community?.totalSolves ?? 0;
+  const isCleanSolve = record.hintsUsed === 0;
 
   const handleCopy = async () => {
     try {
@@ -82,11 +107,29 @@ export const WinDialog = ({
       >
         <div className="flex items-center justify-between gap-3 mb-3">
           <div>
-            <h2 id="win-dialog-title" className="text-lg font-bold">
-              Circuit Complete
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 id="win-dialog-title" className="text-lg font-bold">
+                Circuit Complete
+              </h2>
+              {isCleanSolve && (
+                <span
+                  className="px-2 py-0.5 rounded-sm text-xs font-bold"
+                  style={{
+                    backgroundColor: 'var(--signal)',
+                    color: 'var(--signal-ink)',
+                  }}
+                >
+                  Clean Solve
+                </span>
+              )}
+            </div>
             <p className="text-xs" style={{ color: 'var(--ink-muted)' }}>
               LineQuota #{puzzleNumber} ({dateKey})
+              {playerEntry && totalSolves > 0
+                ? ` · Rank #${playerEntry.rank} of ${totalSolves}`
+                : totalSolves > 0
+                  ? ` · ${totalSolves} ${totalSolves === 1 ? 'solve' : 'solves'} today`
+                  : ''}
             </p>
           </div>
           <button
@@ -133,6 +176,18 @@ export const WinDialog = ({
             </div>
             <div className="text-base font-bold">{record.streak}d</div>
           </div>
+        </div>
+
+        <div
+          className="rounded-md border px-3 py-2 mb-4 flex items-center justify-between text-xs font-semibold tabular-nums"
+          style={{
+            backgroundColor: 'var(--surface-alt)',
+            borderColor: 'var(--border)',
+            color: 'var(--ink)',
+          }}
+        >
+          <span style={{ color: 'var(--ink-muted)' }}>Next Daily Circuit in</span>
+          <span>{formatCountdown(secondsUntilReset)}</span>
         </div>
 
         <pre

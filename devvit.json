@@ -1,11 +1,12 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
-  "name": "linequota",
+  "name": "linequotadaily",
   "post": {
     "dir": "dist/client",
     "entrypoints": {
       "default": {
         "inline": true,
+        "height": "tall",
         "entry": "splash.html"
       },
       "game": {
@@ -18,8 +19,21 @@
     "entry": "index.cjs"
   },
   "permissions": {
+    "redis": true,
+    "journeys": true,
     "reddit": {
-      "enable": true
+      "enable": true,
+      "asUser": [
+        "SUBMIT_COMMENT"
+      ]
+    }
+  },
+  "scheduler": {
+    "tasks": {
+      "daily-circuit": {
+        "endpoint": "/internal/scheduler/daily-circuit",
+        "cron": "0 0 * * *"
+      }
     }
   },
   "menu": {
@@ -39,5 +53,8 @@
   "scripts": {
     "dev": "vite build --watch",
     "build": "vite build"
+  },
+  "dev": {
+    "subreddit": "linequotadaily_dev"
   }
 }

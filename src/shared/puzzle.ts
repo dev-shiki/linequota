@@ -26,8 +26,29 @@ export function sameCoord(a: GridCoord, b: GridCoord): boolean {
   return a.row === b.row && a.col === b.col;
 }
 
+const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const SEED_KEY_PATTERN = /^LQ-[A-Z0-9]{4,8}$/;
+const SEED_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+export function isValidSeedKey(key: string): boolean {
+  return SEED_KEY_PATTERN.test(key);
+}
+
+export function isValidPuzzleKey(key: string): boolean {
+  return DATE_KEY_PATTERN.test(key) || SEED_KEY_PATTERN.test(key);
+}
+
 export function isValidDateKey(dateKey: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(dateKey);
+  return isValidPuzzleKey(dateKey);
+}
+
+export function generateRandomSeedCode(): string {
+  let code = 'LQ-';
+  for (let i = 0; i < 4; i += 1) {
+    const idx = Math.floor(Math.random() * SEED_ALPHABET.length);
+    code += SEED_ALPHABET[idx] ?? 'A';
+  }
+  return code;
 }
 
 export function getUtcDateKey(date: Date = new Date()): string {
@@ -37,6 +58,19 @@ export function getUtcDateKey(date: Date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+export function getSecondsUntilNextUtcDay(now: Date = new Date()): number {
+  const nextUtcMidnightMs = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + 1,
+    0,
+    0,
+    0,
+    0
+  );
+  return Math.max(0, Math.floor((nextUtcMidnightMs - now.getTime()) / 1000));
+}
+
 export function getPreviousUtcDateKey(dateKey: string): string {
   const parsed = Date.parse(`${dateKey}T00:00:00Z`);
   if (Number.isNaN(parsed)) return dateKey;
@@ -44,6 +78,9 @@ export function getPreviousUtcDateKey(dateKey: string): string {
 }
 
 export function getPuzzleNumber(dateKey: string): number {
+  if (isValidSeedKey(dateKey)) {
+    return (hashString(dateKey) % 9000) + 1000;
+  }
   const launchMs = Date.parse(`${LAUNCH_DATE_KEY}T00:00:00Z`);
   const targetMs = Date.parse(`${dateKey}T00:00:00Z`);
   if (Number.isNaN(launchMs) || Number.isNaN(targetMs)) return 1;
@@ -574,6 +611,14 @@ export function formatDuration(totalSeconds: number): string {
   const mins = Math.floor(safe / 60);
   const secs = safe % 60;
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+export function formatCountdown(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(safe / 3600);
+  const mins = Math.floor((safe % 3600) / 60);
+  const secs = safe % 60;
+  return [hours, mins, secs].map((n) => String(n).padStart(2, '0')).join(':');
 }
 
 export function formatShareGrid(

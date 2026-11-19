@@ -3,16 +3,21 @@ import {
   coordKey,
   countSolutions,
   findHintCell,
+  formatCountdown,
   formatDuration,
   formatShareGrid,
   generateDailyPuzzle,
+  generateRandomSeedCode,
   getPreviousUtcDateKey,
   getPuzzleNumber,
+  getSecondsUntilNextUtcDay,
   getTileKind,
   getUtcDateKey,
   isFixedTile,
   isRequiredPathTile,
   isValidDateKey,
+  isValidPuzzleKey,
+  isValidSeedKey,
   toPublicPuzzle,
   validateBoard,
 } from './puzzle';
@@ -153,5 +158,49 @@ describe('LineQuota puzzle engine', () => {
     const hintWithGarbage = findHintCell(puzzle, ['99,99', 'invalid', coordKey(pub.start)]);
     expect(Number.isInteger(hintWithGarbage.coord.row)).toBe(true);
     expect(Number.isInteger(hintWithGarbage.coord.col)).toBe(true);
+  });
+
+  it('validates custom LQ seed keys and generates deterministic uniquely solvable seed puzzles', () => {
+    expect(isValidSeedKey('LQ-7K9P')).toBe(true);
+    expect(isValidPuzzleKey('LQ-7K9P')).toBe(true);
+    expect(isValidDateKey('LQ-7K9P')).toBe(true);
+    expect(isValidSeedKey('LQ-ABCD1234')).toBe(true);
+    expect(isValidSeedKey('LQ-12')).toBe(false);
+    expect(isValidSeedKey('lq-7k9p')).toBe(false);
+    expect(isValidDateKey('LQ-123456789')).toBe(false);
+    expect(isValidSeedKey('2026-11-18')).toBe(false);
+
+    const numA = getPuzzleNumber('LQ-7K9P');
+    const numB = getPuzzleNumber('LQ-7K9P');
+    expect(numA).toBe(numB);
+    expect(numA).toBeGreaterThan(0);
+
+    const p1 = generateDailyPuzzle('LQ-7K9P');
+    const p2 = generateDailyPuzzle('LQ-7K9P');
+    expect(p1).toEqual(p2);
+    expect(p1.puzzleNumber).toBe(numA);
+
+    const uniqueness = countSolutions(toPublicPuzzle(p1), 2);
+    expect(uniqueness.count).toBe(1);
+
+    const validation = validateBoard(toPublicPuzzle(p1), p1.solution.map(coordKey));
+    expect(validation.isValidPath).toBe(true);
+
+    for (let i = 0; i < 20; i += 1) {
+      const code = generateRandomSeedCode();
+      expect(code).toMatch(/^LQ-[A-HJ-NP-Z2-9]{4}$/);
+      expect(isValidDateKey(code)).toBe(true);
+    }
+  });
+
+  it('computes seconds until next UTC day and formats HH:MM:SS countdowns', () => {
+    expect(getSecondsUntilNextUtcDay(new Date('2026-11-18T23:59:59Z'))).toBe(1);
+    expect(getSecondsUntilNextUtcDay(new Date('2026-11-18T00:00:00Z'))).toBe(86400);
+    expect(getSecondsUntilNextUtcDay(new Date('2026-11-18T12:30:15Z'))).toBe(41385);
+
+    expect(formatCountdown(0)).toBe('00:00:00');
+    expect(formatCountdown(3661)).toBe('01:01:01');
+    expect(formatCountdown(86399)).toBe('23:59:59');
+    expect(formatCountdown(-5)).toBe('00:00:00');
   });
 });

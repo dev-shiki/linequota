@@ -296,6 +296,19 @@ api.post('/solve', async (c) => {
       }
 
       await Promise.all(writes);
+
+      const { subredditName } = context;
+      if (dateKey === todayUtc && subredditName && username !== 'player') {
+        try {
+          await reddit.setUserFlair({
+            subredditName,
+            username,
+            text: `LineQuota ⚡ ${streak}d`,
+          });
+        } catch (flairError) {
+          console.warn('Could not update user flair:', flairError);
+        }
+      }
     }
 
     const community = await loadCommunityStats(dateKey);

@@ -1,5 +1,5 @@
-import { useRef } from 'react';
-import type { KeyboardEvent } from 'react';
+import { useEffect, useRef } from 'react';
+import type { KeyboardEvent, PointerEvent } from 'react';
 import {
   coordKey,
   getTileKind,
@@ -12,6 +12,12 @@ import type {
 } from '../../shared/types';
 
 export type InteractionTool = 'draw' | 'mark';
+export type CellStrokeAction = 'draw-on' | 'draw-off' | 'mark-on' | 'mark-off';
+
+interface StrokeState {
+  action: CellStrokeAction;
+  lastKey: string;
+}
 
 interface PuzzleBoardProps {
   puzzle: PuzzlePublic;
@@ -23,6 +29,8 @@ interface PuzzleBoardProps {
   solved: boolean;
   onToggleActive: (coord: GridCoord) => void;
   onToggleMark: (coord: GridCoord) => void;
+  onStrokeStart?: () => void;
+  onSetCell?: (coord: GridCoord, action: CellStrokeAction) => void;
 }
 
 export const PuzzleBoard = ({
@@ -35,13 +43,106 @@ export const PuzzleBoard = ({
   solved,
   onToggleActive,
   onToggleMark,
+  onStrokeStart,
+  onSetCell,
 }: PuzzleBoardProps) => {
   const cellRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const strokeRef = useRef<StrokeState | null>(null);
+  const suppressClickRef = useRef(false);
   const connectedSet = new Set(validation.connectedFromStart);
   const disconnectedSet = new Set(validation.disconnectedActive);
   const branchedSet = new Set(validation.branchedCells);
 
+  useEffect(() => {
+    const endStroke = () => {
+      if (!strokeRef.current && !suppressClickRef.current) return;
+      strokeRef.current = null;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+    };
+    window.addEventListener('pointerup', endStroke);
+    window.addEventListener('pointercancel', endStroke);
+    return () => {
+      window.removeEventListener('pointerup', endStroke);
+      window.removeEventListener('pointercancel', endStroke);
+    };
+  }, []);
+
+  const applyCellAction = (coord: GridCoord, action: CellStrokeAction) => {
+    if (onSetCell) {
+      onSetCell(coord, action);
+    } else if (action === 'draw-on' || action === 'draw-off') {
+      onToggleActive(coord);
+    } else {
+      onToggleMark(coord);
+    }
+  };
+
+  const handleCellPointerDown = (e: PointerEvent<HTMLButtonElement>, coord: GridCoord) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (solved) return;
+    const kind = getTileKind(puzzle, coord);
+    if (kind === 'wall') return;
+
+    const key = coordKey(coord);
+    // Starting a drag from S or E terminal initiates a draw stroke without toggling the terminal itself.
+    if (kind === 'start' || kind === 'end') {
+      suppressClickRef.current = true;
+      strokeRef.current = {
+        action: tool === 'mark' ? 'mark-on' : 'draw-on',
+        lastKey: key,
+      };
+      onStrokeStart?.();
+      return;
+    }
+
+    const action: CellStrokeAction =
+      tool === 'mark'
+        ? markedSet.has(key)
+          ? 'mark-off'
+          : 'mark-on'
+        : activeSet.has(key)
+          ? 'draw-off'
+          : 'draw-on';
+
+    suppressClickRef.current = true;
+    strokeRef.current = { action, lastKey: key };
+    onStrokeStart?.();
+    applyCellAction(coord, action);
+  };
+
+  const applyStrokeAt = (coord: GridCoord) => {
+    const stroke = strokeRef.current;
+    if (!stroke || solved) return;
+    const kind = getTileKind(puzzle, coord);
+    if (isFixedTile(kind)) return;
+
+    const key = coordKey(coord);
+    if (stroke.lastKey === key) return;
+    stroke.lastKey = key;
+    applyCellAction(coord, stroke.action);
+  };
+
+  const handleGridPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (!strokeRef.current) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const btn = el?.closest<HTMLButtonElement>('button[data-row][data-col]');
+    if (!btn) return;
+    const rowAttr = btn.getAttribute('data-row');
+    const colAttr = btn.getAttribute('data-col');
+    if (rowAttr === null || colAttr === null) return;
+    const row = Number(rowAttr);
+    const col = Number(colAttr);
+    if (Number.isNaN(row) || Number.isNaN(col)) return;
+    applyStrokeAt({ row, col });
+  };
+
   const handleCellActivate = (coord: GridCoord) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
     const kind = getTileKind(puzzle, coord);
     if (isFixedTile(kind) || solved) return;
     if (tool === 'mark') {
@@ -97,8 +198,10 @@ export const PuzzleBoard = ({
     >
       <div
         className="grid gap-1.5 items-center"
+        onPointerMove={handleGridPointerMove}
         style={{
           gridTemplateColumns: 'minmax(44px, 52px) repeat(5, minmax(44px, 1fr))',
+          touchAction: 'none',
         }}
       >
         <div
@@ -255,9 +358,15 @@ export const PuzzleBoard = ({
                       else cellRefs.current.delete(key);
                     }}
                     type="button"
+                    data-row={r}
+                    data-col={c}
                     disabled={kind === 'wall'}
                     {...(kind === 'wall' ? {} : { 'aria-pressed': isActive })}
                     aria-label={`Row ${r + 1}, Column ${c + 1}: ${stateDescription}`}
+                    onPointerDown={(e) => handleCellPointerDown(e, coord)}
+                    onPointerEnter={() => {
+                      if (strokeRef.current) applyStrokeAt(coord);
+                    }}
                     onClick={() => handleCellActivate(coord)}
                     onContextMenu={(e) => {
                       e.preventDefault();

@@ -6,6 +6,13 @@ import {
   requestHint,
   submitSolve,
 } from './gameClient';
+import {
+  trackAppReady,
+  trackJourneyEnd,
+  trackJourneyInteraction,
+  trackJourneyProgress,
+  trackJourneyStart,
+} from './telemetry';
 
 describe('gameClient local fallback mode', () => {
   it('loads deterministic puzzle with empty leaderboard in local mode', async () => {
@@ -59,5 +66,13 @@ describe('gameClient local fallback mode', () => {
       'local'
     );
     expect(commentRes.posted).toBe(false);
+  });
+
+  it('executes telemetry wrappers safely without throwing in Vitest environment', async () => {
+    await expect(trackAppReady()).resolves.toBeUndefined();
+    await expect(trackJourneyStart()).resolves.toBeUndefined();
+    await expect(trackJourneyProgress(0.5, 'tile_toggle')).resolves.toBeUndefined();
+    await expect(trackJourneyInteraction('hint_requested', 'add')).resolves.toBeUndefined();
+    await expect(trackJourneyEnd('solved')).resolves.toBeUndefined();
   });
 });
